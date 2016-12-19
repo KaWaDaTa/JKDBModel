@@ -13,6 +13,40 @@
 
 @implementation JKDBModel
 
+- (void)encodeWithCoder:(NSCoder *)aCoder
+{
+    unsigned int count = 0;
+    Ivar *ivars = class_copyIvarList([self class], &count);
+    for (int i = 0; i<count; i++) {
+        Ivar ivar = ivars[i];
+        const char *name = ivar_getName(ivar);
+        NSString *key = [NSString stringWithUTF8String:name];
+        id value = [self valueForKey:key];
+        [aCoder encodeObject:value forKey:key];
+    }
+    free(ivars);
+}
+
+- (instancetype)initWithCoder:(NSCoder *)aDecoder
+{
+    self = [super init];
+    if (self) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList([self class], &count);
+        for (int i = 0; i<count; i++) {
+            Ivar ivar = ivars[i];
+            const char *name = ivar_getName(ivar);
+            NSString *key = [NSString stringWithUTF8String:name];
+            id value = [aDecoder decodeObjectForKey:key];
+            [self setValue:value forKey:key];
+        }
+        free(ivars);
+    }
+    return self;
+}
+
+#pragma mark - 创建数据库 -> 通过运行时拿到模型所有的属性，属性类型 -> 添加一个主键属性 -> 将所有的属性，主键拼接成（符合sqlite语法）字段定义语句 -> 执行语句，创建表以及表字段 -> 重新拿到所有的属性名，以及数据库中所有的字段名；将这2个数组进行对比，一旦发现某个属性在数据库没有对应的字段（漏掉了），数据库立即新增字段 -> 关闭数据库
+
 #pragma mark - override method
 + (void)initialize
 {
@@ -73,7 +107,7 @@
          */
         if ([propertyType hasPrefix:@"T@\"NSString\""]) {
             [proTypes addObject:SQLTEXT];
-        } else if ([propertyType hasPrefix:@"T@\"NSData\""]) {
+        } else if ([propertyType hasPrefix:@"T@\"NSData\""]  || [propertyType hasPrefix:@"T@"]) {
             [proTypes addObject:SQLBLOB];
         } else if ([propertyType hasPrefix:@"Ti"]||[propertyType hasPrefix:@"TI"]||[propertyType hasPrefix:@"Ts"]||[propertyType hasPrefix:@"TS"]||[propertyType hasPrefix:@"TB"]||[propertyType hasPrefix:@"Tq"]||[propertyType hasPrefix:@"TQ"]) {
             [proTypes addObject:SQLINTEGER];
@@ -251,6 +285,10 @@
     NSMutableString *keyString = [NSMutableString string];
     NSMutableString *valueString = [NSMutableString string];
     NSMutableArray *insertValues = [NSMutableArray  array];
+    
+    NSDictionary *dict = [self.class getAllProperties];
+    NSMutableArray *proTypes = [dict objectForKey:@"type"];
+    
     for (int i = 0; i < self.columeNames.count; i++) {
         NSString *proname = [self.columeNames objectAtIndex:i];
         if ([proname isEqualToString:primaryId]) {
@@ -258,7 +296,15 @@
         }
         [keyString appendFormat:@"%@,", proname];
         [valueString appendString:@"?,"];
-        id value = [self valueForKey:proname];
+        id value = nil;
+        if ([proTypes[i] isEqualToString:SQLBLOB]) {//数组存储前先反序列化为二进制数据
+            id object = [self valueForKey:proname];
+            value = [NSKeyedArchiver archivedDataWithRootObject:object];
+        }else {
+            value = [self valueForKey:proname];
+        }
+        
+        //属性值可能为空
         if (!value) {
             value = @"";
         }
@@ -289,6 +335,9 @@
         }
     }
     
+    NSDictionary *dict = [self.class getAllProperties];
+    NSMutableArray *proTypes = [dict objectForKey:@"type"];
+    
     __block BOOL res = YES;
     JKDBHelper *jkDB = [JKDBHelper shareInstance];
     // 如果要支持事务
@@ -305,7 +354,15 @@
                 }
                 [keyString appendFormat:@"%@,", proname];
                 [valueString appendString:@"?,"];
-                id value = [model valueForKey:proname];
+                id value = nil;
+                if ([proTypes[i] isEqualToString:SQLBLOB]) {//数组存储前先反序列化为二进制数据
+                    id object = [self valueForKey:proname];
+                    value = [NSKeyedArchiver archivedDataWithRootObject:object];
+                }else {
+                    value = [self valueForKey:proname];
+                }
+                
+                //属性值可能为空
                 if (!value) {
                     value = @"";
                 }
@@ -331,6 +388,9 @@
 /** 更新单个对象 */
 - (BOOL)update
 {
+    NSDictionary *dict = [self.class getAllProperties];
+    NSMutableArray *proTypes = [dict objectForKey:@"type"];
+    
     JKDBHelper *jkDB = [JKDBHelper shareInstance];
     __block BOOL res = NO;
     [jkDB.dbQueue inDatabase:^(FMDatabase *db) {
@@ -347,7 +407,15 @@
                 continue;
             }
             [keyString appendFormat:@" %@=?,", proname];
-            id value = [self valueForKey:proname];
+            id value = nil;
+            if ([proTypes[i] isEqualToString:SQLBLOB]) {//数组存储前先反序列化为二进制数据
+                id object = [self valueForKey:proname];
+                value = [NSKeyedArchiver archivedDataWithRootObject:object];
+            }else {
+                value = [self valueForKey:proname];
+            }
+            
+            //属性值可能为空
             if (!value) {
                 value = @"";
             }
@@ -367,6 +435,9 @@
 /** 批量更新用户对象*/
 + (BOOL)updateObjects:(NSArray *)array
 {
+    NSDictionary *dict = [self.class getAllProperties];
+    NSMutableArray *proTypes = [dict objectForKey:@"type"];
+    
     for (JKDBModel *model in array) {
         if (![model isKindOfClass:[JKDBModel class]]) {
             return NO;
@@ -393,7 +464,15 @@
                     continue;
                 }
                 [keyString appendFormat:@" %@=?,", proname];
-                id value = [model valueForKey:proname];
+                id value = nil;
+                if ([proTypes[i] isEqualToString:SQLBLOB]) {//数组存储前先反序列化为二进制数据
+                    id object = [self valueForKey:proname];
+                    value = [NSKeyedArchiver archivedDataWithRootObject:object];
+                }else {
+                    value = [self valueForKey:proname];
+                }
+                
+                //属性值可能为空
                 if (!value) {
                     value = @"";
                 }
@@ -525,7 +604,7 @@
                  if ([columeType isEqualToString:SQLTEXT]) {
                      [model setValue:[resultSet stringForColumn:columeName] forKey:columeName];
                  } else if ([columeType isEqualToString:SQLBLOB]) {
-                     [model setValue:[resultSet dataForColumn:columeName] forKey:columeName];
+                     [model setValue:[NSKeyedUnarchiver unarchiveObjectWithData:[resultSet dataForColumn:columeName]] forKey:columeName];
                  } else {
                      [model setValue:[NSNumber numberWithLongLong:[resultSet longLongIntForColumn:columeName]] forKey:columeName];
                  }
@@ -592,7 +671,7 @@
                 if ([columeType isEqualToString:SQLTEXT]) {
                     [model setValue:[resultSet stringForColumn:columeName] forKey:columeName];
                 } else if ([columeType isEqualToString:SQLBLOB]) {
-                    [model setValue:[resultSet dataForColumn:columeName] forKey:columeName];
+                    [model setValue:[NSKeyedUnarchiver unarchiveObjectWithData:[resultSet dataForColumn:columeName]] forKey:columeName];
                 } else {
                     [model setValue:[NSNumber numberWithLongLong:[resultSet longLongIntForColumn:columeName]] forKey:columeName];
                 }

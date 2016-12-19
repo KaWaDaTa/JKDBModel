@@ -18,7 +18,7 @@
 
 #define primaryId   @"pk"
 
-@interface JKDBModel : NSObject
+@interface JKDBModel : NSObject<NSCoding>
 
 /** 主键 id */
 @property (nonatomic, assign)   int        pk;
